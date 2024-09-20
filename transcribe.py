@@ -4,9 +4,14 @@ import math
 import logging
 from openai import OpenAI
 from dotenv import load_dotenv
+import asyncio
+from typing import Dict
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Global dictionary to store cancellation flags for each transcription job
+cancellation_flags: Dict[str, bool] = {}
 
 def split_audio(audio_file_path, chunk_length_ms=60000, ffmpeg_path="ffmpeg"):
     logger.info(f"Splitting audio file: {audio_file_path}")
@@ -43,13 +48,19 @@ def format_timestamp(seconds):
     minutes = int(seconds / 60)
     return f"{minutes:02d}:00"
 
-def transcribe_audio(audio_file_path, ffmpeg_path, api_key):
+async def transcribe_audio(audio_file_path, ffmpeg_path, api_key, job_id):
     logger.info(f"Transcribing audio file: {audio_file_path}")
     full_transcript = []
     chunk_length_seconds = 60  # 1 minute chunks
     chunk_generator = split_audio(audio_file_path, ffmpeg_path=ffmpeg_path)
 
+    cancellation_flags[job_id] = False
+
     for i, chunk_file in enumerate(chunk_generator):
+        if cancellation_flags[job_id]:
+            logger.info(f"Transcription job {job_id} cancelled")
+            break
+
         logger.info(f"Processing chunk {i}: {chunk_file}")
         try:
             if not os.path.exists(chunk_file):
@@ -75,6 +86,9 @@ def transcribe_audio(audio_file_path, ffmpeg_path, api_key):
             if os.path.exists(chunk_file):
                 logger.info(f"Removing chunk file: {chunk_file}")
                 os.remove(chunk_file)
-    
+        
+        await asyncio.sleep(0)  # Allow other coroutines to run
+
+    del cancellation_flags[job_id]
     logger.info(f"Transcription completed. Total chunks transcribed: {len(full_transcript)}")
     return "\n".join(full_transcript)
