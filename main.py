@@ -10,8 +10,6 @@ from transcribe import transcribe_audio
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
 app = FastAPI()
 
 class TranscriptionResponse(BaseModel):
@@ -19,9 +17,6 @@ class TranscriptionResponse(BaseModel):
 
 class UrlRequest(BaseModel):
     url: HttpUrl
-
-class ApiKeyRequest(BaseModel):
-    api_key: str
 
 @app.post("/transcribe/file", response_model=TranscriptionResponse)
 async def transcribe_file(file: UploadFile = File(...), api_key: str = Form(...)):

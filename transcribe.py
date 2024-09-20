@@ -8,13 +8,6 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise ValueError("OPENAI_API_KEY environment variable is not set")
-client = OpenAI(api_key=openai_api_key)
-
 def split_audio(audio_file_path, chunk_length_ms=60000, ffmpeg_path="ffmpeg"):
     logger.info(f"Splitting audio file: {audio_file_path}")
     ffprobe_path = "ffprobe"
@@ -55,9 +48,7 @@ def transcribe_audio(audio_file_path, ffmpeg_path, api_key):
     full_transcript = []
     chunk_length_seconds = 60  # 1 minute chunks
     chunk_generator = split_audio(audio_file_path, ffmpeg_path=ffmpeg_path)
-    
-    client = OpenAI(api_key=api_key)
-    
+
     for i, chunk_file in enumerate(chunk_generator):
         logger.info(f"Processing chunk {i}: {chunk_file}")
         try:
@@ -67,7 +58,7 @@ def transcribe_audio(audio_file_path, ffmpeg_path, api_key):
             
             logger.info(f"Transcribing chunk {i}: {chunk_file}")
             with open(chunk_file, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
+                transcript = OpenAI(api_key=api_key).audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     language="it"
