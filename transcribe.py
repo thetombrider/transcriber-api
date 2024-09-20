@@ -6,6 +6,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import asyncio
 from typing import Dict
+from fastapi import BackgroundTasks
+from sse_starlette.sse import EventSourceResponse
+from shared import latest_transcripts
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -48,47 +51,68 @@ def format_timestamp(seconds):
     minutes = int(seconds / 60)
     return f"{minutes:02d}:00"
 
-async def transcribe_audio(audio_file_path, ffmpeg_path, api_key, job_id):
-    logger.info(f"Transcribing audio file: {audio_file_path}")
-    full_transcript = []
-    chunk_length_seconds = 60  # 1 minute chunks
-    chunk_generator = split_audio(audio_file_path, ffmpeg_path=ffmpeg_path)
+async def transcribe_audio(audio_file_path, ffmpeg_path, api_key, job_id, background_tasks: BackgroundTasks):
+    async def event_generator():
+        logger.info(f"Transcribing audio file: {audio_file_path}")
+        full_transcript = []
+        chunk_length_seconds = 60  # 1 minute chunks
+        chunk_generator = split_audio(audio_file_path, ffmpeg_path=ffmpeg_path)
 
-    cancellation_flags[job_id] = False
+        cancellation_flags[job_id] = False
 
-    for i, chunk_file in enumerate(chunk_generator):
-        if cancellation_flags[job_id]:
-            logger.info(f"Transcription job {job_id} cancelled")
-            break
+        for i, chunk_file in enumerate(chunk_generator):
+            if cancellation_flags[job_id]:
+                logger.info(f"Transcription job {job_id} cancelled")
+                yield {"event": "cancel", "data": "Transcription cancelled"}
+                break
 
-        logger.info(f"Processing chunk {i}: {chunk_file}")
-        try:
-            if not os.path.exists(chunk_file):
-                logger.warning(f"Chunk file not found: {chunk_file}")
-                continue
+            logger.info(f"Processing chunk {i}: {chunk_file}")
+            try:
+                if not os.path.exists(chunk_file):
+                    logger.warning(f"Chunk file not found: {chunk_file}")
+                    continue
+                
+                logger.info(f"Transcribing chunk {i}: {chunk_file}")
+                with open(chunk_file, "rb") as audio_file:
+                    transcript = OpenAI(api_key=api_key).audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="it"
+                    )
+                
+                timestamp = format_timestamp(i * chunk_length_seconds)
+                chunk_transcript = f"{timestamp}:   {transcript.text}"
+                full_transcript.append(chunk_transcript)
+                logger.info(f"Chunk {i} transcribed: {timestamp}")
+                
+                # Yield the chunk transcript immediately
+                yield {"event": "chunk", "data": chunk_transcript}
             
-            logger.info(f"Transcribing chunk {i}: {chunk_file}")
-            with open(chunk_file, "rb") as audio_file:
-                transcript = OpenAI(api_key=api_key).audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    language="it"
-                )
+            except Exception as e:
+                logger.error(f"Error transcribing chunk {i}: {str(e)}")
+                yield {"event": "error", "data": f"Error transcribing chunk {i}: {str(e)}"}
             
-            timestamp = format_timestamp(i * chunk_length_seconds)
-            full_transcript.append(f"{timestamp}:   {transcript.text}")
-            logger.info(f"Chunk {i} transcribed: {timestamp}")
-        
-        except Exception as e:
-            logger.error(f"Error transcribing chunk {i}: {str(e)}")
-        
-        finally:
-            if os.path.exists(chunk_file):
-                logger.info(f"Removing chunk file: {chunk_file}")
-                os.remove(chunk_file)
-        
-        await asyncio.sleep(0)  # Allow other coroutines to run
+            finally:
+                if os.path.exists(chunk_file):
+                    logger.info(f"Removing chunk file: {chunk_file}")
+                    os.remove(chunk_file)
+            
+            await asyncio.sleep(0)  # Allow other coroutines to run
 
-    del cancellation_flags[job_id]
-    logger.info(f"Transcription completed. Total chunks transcribed: {len(full_transcript)}")
-    return "\n".join(full_transcript)
+        del cancellation_flags[job_id]
+        logger.info(f"Transcription completed. Total chunks transcribed: {len(full_transcript)}")
+        final_transcript = "\n".join(full_transcript)
+        
+        # Store the transcript in a file or database associated with the job_id
+        save_transcript(job_id, final_transcript)
+        
+        yield {"event": "complete", "data": "Transcription completed"}
+
+    return EventSourceResponse(event_generator())
+
+def save_transcript(job_id, transcript):
+    with open(f"{job_id}_transcript.txt", "w") as f:
+        f.write(transcript)
+    # Clear the latest_transcripts for this job_id
+    if job_id in latest_transcripts:
+        del latest_transcripts[job_id]
